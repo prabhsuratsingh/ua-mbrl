@@ -8,3 +8,14 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Secrets (vast.ai / GitHub credentials) -- see .env.example
+.env
+
+# Run outputs: local scratch runs and transient remote state. Keep
+# results/published/ (reference data) and commit curated runs deliberately.
+results/local/
+results/vast/.known_hosts
+results/*.log
+*.tgz
+.pytest_cache/

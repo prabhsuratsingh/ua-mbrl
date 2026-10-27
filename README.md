@@ -1,132 +1,124 @@
-"""# UA-MBRL
+# ua-mbrl
 
-Uncertainty-aware GPU model-based MPPI experiments for a learned pendulum.
+GPU-batched, uncertainty-gated ensemble MPPI. This is the code behind
+`arxiv_preprint.tex`. It locates the wall-clock crossover where adaptive
+rollout allocation beats a fixed budget, and characterizes how reliable
+ensemble disagreement is as an out-of-distribution (OOD) trigger.
 
-## Current Research Result
-
-Bootstrap ensembles outperform a single learned dynamics model for MPPI control
-and are more robust to mass and gravity mismatch. Directly adding ensemble
-variance to the MPPI cost has not yet improved control reliably.
-
-The strongest validated contribution is **GPU-efficient uncertainty-aware
-MPPI**. It combines bootstrap ensemble dynamics, severe-OOD detection, and
-batched ensemble inference. Severe OOD states/actions produced approximately
-a 4x increase in ensemble disagreement and ROC AUC 1.0, while mild OOD
-produced only AUC 0.63. Disagreement is therefore treated as a severe-shift
-detector, not universally calibrated uncertainty or a raw risk penalty.
-
-The adaptive controller now calibrates its threshold from held-out
-in-distribution pilot rollouts at the 95th percentile. This keeps nominal
-compute near the low rollout budget, but current screening shows that it can
-miss moderate dynamics shifts. That limitation is part of the research
-hypothesis: the gate is intended for severe OOD detection and must be tested
-with explicit detection coverage, false-alarm rate, and effective compute.
-Calibration states and evaluation states are kept separate, and effective
-compute includes both pilot and full-planning rollouts.
-
-## Experiments
+## Setup
 
 ```powershell
-uv run python experiment_ensemble_uncertainty.py
-uv run python validation_ensemble_mppi.py
-uv run python robustness_mismatch_experiment.py
-uv run python ood_uncertainty_experiment.py
+uv sync                    # Python 3.12, torch cu128, mujoco, pytest
+uv run ua-mbrl env         # GPU / driver / library versions
+uv run ua-mbrl list        # every experiment and the paper result it produces
 ```
 
-MuJoCo smoke test:
+## Layout
+
+```
+src/ua_mbrl/
+  core/          dynamics.py (residual MLP, bootstrap ensemble with stacked-einsum
+                 inference/training), mppi.py (GenericMPPI, AdaptiveGenericMPPI,
+                 SeedBatchedGenericMPPI), fallback.py, normalizer.py
+  envs/          pendulum.py, two_link.py (MuJoCo regulation), reacher.py
+  eval/          pendulum.py (shared seeded closed-loop runners), ood.py
+  experiments/   one module per experiment, registered in experiments/__init__.py
+  suites.py      named lists of runs (replicate, latency, smoke, ...)
+  replication.py compares a suite run with the published numbers
+  remote/vast.py one-command vast.ai runs
+  figures.py     paper figures
+  cli.py         `ua-mbrl` entry point
+tests/           equivalence with legacy/, published-result checks, CLI, remote
+legacy/          the original flat scripts, frozen (used by the equivalence tests)
+results/
+  published/     raw records behind the paper's MuJoCo and crossover tables
+  local/ ...     your runs: results/<tag>/<experiment>/<timestamp>/
+  vast/<gpu>/    runs fetched from vast.ai
+```
+
+## Running experiments
 
 ```powershell
-uv run python mujoco_generic_experiment.py
+uv run ua-mbrl run claim_a                                    # paper scale
+uv run ua-mbrl run claim_a --cases 8000:nominal --num-seeds 100
+uv run ua-mbrl run mujoco_regulation --sigma 0.2 --seeds 7 17 27
+uv run ua-mbrl run crossover_sweep --k-values 1000 8000 16000 32000
 ```
 
-The main experimental modules are `ensemble_dynamics.py`, `ensemble_mppi.py`,
-and `ood_uncertainty_experiment.py`.
+Each run writes the following to `results/<tag>/<experiment>/<timestamp>/` (or to `--out-dir`):
 
-## General Simulation API
+- `meta.json`: arguments, git commit, GPU, driver, torch and CUDA versions
+- `records.jsonl`: one record per completed unit, with per-seed outcomes
+- `stdout.log`
+- `DONE`
 
-The dimension-agnostic primitives are in `generic_mbrl.py`. They support
-arbitrary state and action dimensions and accept simulator-specific hooks for:
+Run `uv run ua-mbrl run <experiment> --help` to see each experiment's options.
 
-- feature encoding: `feature_fn(x, u)`
-- residual targets: `residual_fn(x_next, x)`
-- state reconstruction: `transition_fn(x, delta)`
-- task cost: `cost_fn(x, u, target)`
-
-This is the intended path to MuJoCo and other simulators. A simulator adapter
-should own observation/action conversion, quaternion or angle residuals,
-termination handling, and task cost. The learned ensemble and MPPI controller
-should remain unchanged across environments.
-
-The generic path has been smoke-tested with a 6-dimensional state and
-2-dimensional action vector.
-
-It has also been validated against a MuJoCo two-link arm with a 4-dimensional
-`qpos/qvel` observation and 2-dimensional torque action. The adapter collected
-1,000 simulator transitions, trained a five-model ensemble, and executed
-20-step GPU MPPI with 500 rollouts.
-
-The first comparative MuJoCo benchmark exposed an important limitation. With
-2,000 random transitions and 50 control steps, the single model achieved 0%
-success on both CPU and CUDA. The ensemble achieved 20% on CPU and 0% on
-CUDA. This confirms the generic execution path, but not yet MuJoCo control
-quality. The next required algorithmic step is state/action normalization and
-task-directed data coverage before making cross-simulator performance claims.
-
-State/action normalization, task-directed replay, and a stabilized MuJoCo
-actuation model are now included. The corrected benchmark has a `100%` PD
-reference success rate. Learned control reached `40%` single-model and `60%`
-ensemble success on CPU, and `0%` single-model and `40%` ensemble success on
-CUDA. This is the first valid non-pendulum control result, but device and seed
-variance require a multi-seed benchmark before publication claims.
-
-The completed three-seed follow-up reports CUDA success of `33.3% +/- 0%` for
-the single model and `55.6% +/- 21.8%` for the ensemble. CPU success was
-`55.6% +/- 21.8%` for both. Mean CUDA command latency was `121.8 ms` for the
-single model and `344.9 ms` for the ensemble. The ensemble improvement is
-promising on CUDA, but it carries a substantial latency cost and is not yet a
-universal cross-device result.
-
-The ensemble inference path is now vectorized across members and caches its
-stacked parameters. In the same paired benchmark, this preserved CUDA ensemble
-success at `55.6% +/- 21.8%` while reducing mean CUDA command latency to
-`94.5 ms`, approximately a `3.6x` reduction from the uncached path. The exact
-prediction equivalence check reports zero maximum delta difference.
-
-A controlled loop-versus-batched CUDA ablation at `E=5`, `K=1000`, and `N=10`
-reduced latency from `23.65 ms` to `12.37 ms` and increased throughput from
-`2.11M` to `4.04M` model evaluations per second. The CPU path did not improve
-consistently, so this is specifically a GPU ensemble-inference contribution.
-
-The generic calibrated adaptive-$K$ benchmark produced a mixed but useful
-result. On CPU, adaptive MPPI reached `66.7% +/- 37.7%` success versus
-`55.6% +/- 57.6%` for fixed ensemble MPPI, while latency fell from `139.3 ms`
-to `96.7 ms`. On CUDA, both methods reached `55.6%` success, but adaptive
-latency increased from `95.9 ms` to `114.1 ms` because pilot overhead exceeded
-the saved full rollouts. This identifies the next systems target: fuse or
-reduce pilot inference on GPU before claiming adaptive compute savings.
-
-Adaptive-$K$ experiments are retained as future work. A focused single-seed
-CUDA ablation was encouraging, but the paired multi-seed study did not show a
-reliable latency benefit.
-
-The paired three-seed follow-up did not validate a universal adaptive-$K$
-advantage. With the `8x2` pilot, fixed and adaptive success were both
-`33.3% +/- 65.3%`; adaptive effective rollout work fell to `265.3 +/- 42.2`,
-but latency increased from `74.4 +/- 3.4 ms` to `88.5 +/- 9.3 ms`. A minimal
-`1x1` pilot reduced work further but produced `0%` success in the same screen.
-Adaptive-$K$ is therefore retained as future work, not the primary claim.
-
-## GPU Scaling
-
-Run the generic systems benchmark with MuJoCo-like dimensions:
+## Reproducing the paper
 
 ```powershell
-uv run python gpu_mppi_benchmark.py --state-dim 13 --action-dim 4
+uv run ua-mbrl suite replicate --tag local-gtx1650    # every paper result with code, full scale
+uv run ua-mbrl check results/local-gtx1650/<suite-dir> # -> replication_report.md
 ```
 
-The benchmark reports command latency, total model evaluations, and model
-evaluations per second for different ensemble sizes and rollout counts. In a
-CUDA smoke run with `E=5`, `K=1000`, and `N=15`, the generic controller
-processed approximately 1.72 million model evaluations per second, compared
-with approximately 0.87 million on CPU. These numbers are hardware-specific;
-the benchmark is the reproducible result, not the absolute throughput claim.
+`check` compares the run with the published numbers. Seeded results are
+compared exactly: success rates, paired records, AUCs, and the per-seed MuJoCo
+records. Latency is reported for information only, because it depends on the
+hardware. The suite runs each experiment in a fresh process, and a stopped
+suite resumes when you rerun it with the same `--out-dir`.
+
+**Results from before the pilot-RNG fix.** `tab:confound`, `tab:mujoco`
+(regulation and reaching) and the narrow-ensemble fallback rate were produced
+with the controller as it was before that fix. At the time, the adaptive
+pilot drew its noise from the shared global random stream. Running with
+`--pilot-rng shared` restores exactly that behaviour, and the `replicate`
+suite does so for those results. New experiments should keep the default,
+`--pilot-rng isolated`.
+
+**No script for these paper numbers:** `tab:sigmasweep`, the 33.95×
+seed-batching row, the cached-inference and training rows of
+`tab:gpuspeedups`, and the Claim A K=1000 nominal row.
+
+## Tests
+
+```powershell
+uv run pytest                   # everything (about 5 min on a GTX 1650)
+uv run pytest -m "not slow"     # fast: stats, published-result checks, remote runner
+```
+
+`tests/test_equivalence.py` replays each legacy script at reduced scale and
+requires the package to reproduce its seeded outputs exactly. Those outputs
+are thresholds, per-seed successes, effective K, ESS traces and AUCs. The test
+fails if the refactor changed the order of random-number draws anywhere.
+
+## vast.ai
+
+1. Copy `.env.example` to `.env`. Set `VAST_API_KEY` and `VAST_SSH_KEY`.
+   Optionally set `GITHUB_TOKEN` and `GITHUB_REPO`.
+2. Nothing else to install: the runner calls a pinned `vastai` CLI through `uvx`.
+3. Run:
+
+```powershell
+uv run ua-mbrl remote offers --gpu RTX_4090 RTX_5090 A100_SXM4           # prices, no key needed
+uv run ua-mbrl remote run --gpu RTX_4090 --suite replicate
+uv run ua-mbrl remote run --gpu RTX_4090 A100_SXM4 --suite latency --exclusive
+uv run ua-mbrl remote run --gpu RTX_5090 --experiment claim_a -- --num-seeds 100
+```
+
+A single command does the whole run:
+
+- **Rent:** picks the cheapest verified matching offer.
+- **Ship code:** with `--source auto`, it clones your exact HEAD from GitHub if
+  HEAD is pushed and the tree is clean. Otherwise it uploads the working tree.
+- **Run:** installs with `uv sync --frozen`, runs detached on the instance and
+  streams the log.
+- **Fetch:** copies results to `results/vast/<gpu>/<run-id>/`. That folder also
+  gets the offer details, timing and an approximate cost.
+- **Destroy:** removes the instance. This also happens on failure or Ctrl-C,
+  after fetching partial results.
+
+Use `--keep` to leave the instance running. Then use `remote fetch` and
+`remote destroy` to collect results and clean up.
+
+`--exclusive` rents only whole machines. Use it for latency runs, so no
+co-tenants share the CPU or PCIe.
