@@ -388,3 +388,37 @@ dry run of the retry loop with a stand-in `uv`.
 1. **[Weak, one host] Download speed from a host to `pypi.nvidia.com` varies.**
    Setup time on vast.ai depends on the host's network as well as the GPU.
    Budget 10–20 min of setup per rental.
+
+## 2026-11-06 · Third vast.ai smoke run: pipeline works end to end (RTX 4090)
+
+**Command:** `uv run ua-mbrl remote run --gpu RTX_4090 --suite smoke`. The
+source was the uploaded tree at commit `3f923f2`; `git_dirty` is false, so
+provenance is exact from now on.
+
+**Run directory:** `results/vast/rtx_4090/smoke-20261106-121402/`.
+
+**Hardware:**
+- GPU: RTX 4090 24 GB, driver 615.71.09, 3285 MHz maximum SM clock.
+- CPU: AMD Ryzen 7 5700X, 8 cores.
+- Host: France, offer 47697287, instance 59380360.
+- Software: torch 2.11.0+cu128, the same build as the local GTX 1650.
+
+**Result:**
+- Rent, install, run, fetch and destroy all succeeded. The whole cycle took
+  0.072 h, about $0.03.
+- With the timeout and retry settings, `uv sync` finished on the first
+  attempt on this host.
+- All three smoke experiments exited with code 0, and the results were
+  fetched.
+
+**Numbers:** none of scientific value. The smoke configurations are tiny,
+for example 3 seeds and 3 steps for Claim A, and 2 seeds and 2 steps for
+the crossover. Do not compare them with full-scale results. In particular,
+the crossover ratio of about 0.97 at K = 100 and 300 reflects S = 2 seeds,
+not the paper's S = 20.
+
+**Tooling follow-ups:**
+- `remote instances` now says "no instances" when the list is empty.
+- `ua-mbrl suite` compares only `replicate` and `replicate_quick` against
+  the paper. `smoke` has no targets, and `current_controller` is meant to
+  differ from them.

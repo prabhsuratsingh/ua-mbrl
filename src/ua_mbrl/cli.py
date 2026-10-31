@@ -119,7 +119,8 @@ def main(argv=None):
         from ua_mbrl.replication import check_suite
         from ua_mbrl.suites import run_suite
         suite_dir, failures = run_suite(args.name, tag=args.tag, out_dir=args.out_dir, only=args.only, skip=args.skip)
-        if not args.no_check:
+        from ua_mbrl.suites import CHECKED_SUITES
+        if args.name in CHECKED_SUITES and not args.no_check:
             check_suite(suite_dir)
         return 1 if failures else 0
     elif args.command == "check":

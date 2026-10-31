@@ -20,6 +20,10 @@ from ua_mbrl.utils.results import PUBLISHED_DIR, RESULTS_ROOT
 # fallback rate) are rerun with --pilot-rng shared, i.e. the controller they
 # were actually produced with; everything later uses the current controller.
 SHARED = ["--pilot-rng", "shared"]
+# Suites whose runs have published targets; only these are compared with the
+# paper after running (`current_controller` is meant to differ from them).
+CHECKED_SUITES = ("replicate", "replicate_quick")
+
 SUITES = {
     "replicate": [
         ("crossover_sweep", "crossover_sweep", []),

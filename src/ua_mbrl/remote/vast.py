@@ -561,7 +561,10 @@ def cmd_offers(config, args):
 
 
 def cmd_instances(config, args):
-    for row in vast(config, "show", "instances"):
+    rows = vast(config, "show", "instances")
+    if not rows:
+        print("no instances (nothing is running or billing)")
+    for row in rows:
         print(f"{row.get('id')}  {row.get('actual_status')}  {row.get('gpu_name')}  ${row.get('dph_total', 0):.3f}/h  "
               f"{row.get('label') or ''}")
     return 0
