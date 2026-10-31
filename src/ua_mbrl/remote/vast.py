@@ -47,6 +47,19 @@ REMOTE_ROOT = "/workspace/ua-mbrl"
 LOCAL_ROOT = REPO_ROOT / "results" / "vast"
 _print_lock = threading.Lock()
 
+# Ctrl-C handling: the main thread sets _STOP; every worker wait loop checks it
+# (via _sleep) and unwinds into its finally block, which fetches partial
+# results and destroys the instance. _ACTIVE tracks instances not yet
+# destroyed so a second Ctrl-C can destroy them directly.
+_STOP = threading.Event()
+_ACTIVE = {}
+_active_lock = threading.Lock()
+
+
+def _sleep(seconds):
+    if _STOP.wait(seconds):
+        raise RuntimeError("stopped by Ctrl-C")
+
 
 # --- configuration ----------------------------------------------------------
 
@@ -121,7 +134,8 @@ def _vastai_command():
 def vast(config, *args, raw=True, check=True):
     command = _vastai_command() + list(args) + (["--raw"] if raw else [])
     env = {**os.environ, "VAST_API_KEY": config.api_key, "PYTHONIOENCODING": "utf-8"}
-    result = subprocess.run(command, capture_output=True, text=True, env=env, encoding="utf-8")
+    result = subprocess.run(command, capture_output=True, text=True, env=env, encoding="utf-8",
+                            errors="replace", stdin=subprocess.DEVNULL)
     output = (result.stdout or "").strip()
     if check and result.returncode != 0:
         raise RuntimeError(config.redact(f"vastai {' '.join(args)} failed: {result.stderr or output}"))
@@ -133,7 +147,18 @@ def vast(config, *args, raw=True, check=True):
         raise RuntimeError(config.redact(f"vastai {' '.join(args)}: unexpected output {output[:500]!r}")) from error
 
 
-def search_offers(config, gpu, disk_gb, max_dph=None, exclusive=False, min_reliability=0.98, limit=10):
+# Hosts in these countries were unreliable for us in the past; excluded unless
+# --exclude-countries says otherwise.
+DEFAULT_EXCLUDED_COUNTRIES = ("CN", "VN")
+
+
+def _country(offer):
+    """ISO code from a geolocation like 'Vietnam, VN' ('' if unknown)."""
+    return (offer.get("geolocation") or "").rsplit(",", 1)[-1].strip().upper()
+
+
+def search_offers(config, gpu, disk_gb, max_dph=None, exclusive=False, min_reliability=0.98, limit=10,
+                  exclude_countries=DEFAULT_EXCLUDED_COUNTRIES):
     query = (
         f"gpu_name={gpu} num_gpus=1 rentable=true verified=true reliability>{min_reliability} "
         f"disk_space>={disk_gb} cuda_vers>=12.8 direct_port_count>=1"
@@ -142,8 +167,12 @@ def search_offers(config, gpu, disk_gb, max_dph=None, exclusive=False, min_relia
         query += " gpu_frac=1"  # the whole machine is ours: no co-tenants on its CPU/PCIe
     if max_dph:
         query += f" dph<={max_dph}"
+    excluded = {c.upper() for c in exclude_countries or ()}
+    if excluded:
+        query += f" geolocation notin [{','.join(sorted(excluded))}]"
     offers = vast(config, "search", "offers", query, "-o", "dph", "--limit", str(limit), "--storage", str(disk_gb))
-    return offers if isinstance(offers, list) else offers.get("offers", [])
+    offers = offers if isinstance(offers, list) else offers.get("offers", [])
+    return [o for o in offers if _country(o) not in excluded]
 
 
 def describe_offer(offer):
@@ -163,10 +192,14 @@ def show_instance(config, instance_id):
 
 def destroy_instance(config, instance_id, prefix):
     try:
-        vast(config, "destroy", "instance", str(instance_id), raw=False)
-        log(prefix, f"instance {instance_id} destroyed")
+        vast(config, "destroy", "instance", str(instance_id), "-y", raw=False)
     except RuntimeError as error:
         log(prefix, f"!! could not destroy instance {instance_id}: {error} -- destroy it at https://cloud.vast.ai/instances/")
+        return False
+    with _active_lock:
+        _ACTIVE.pop(instance_id, None)
+    log(prefix, f"instance {instance_id} destroyed")
+    return True
 
 
 # --- ssh helpers ------------------------------------------------------------
@@ -190,24 +223,32 @@ class Remote:
             "-o", "LogLevel=ERROR",
         ]
 
-    def ssh(self, command, script=None, check=True, capture=True, timeout=None):
+    def ssh(self, command, script=None, check=True, timeout=None):
+        """Run `command` remotely. `script` is fed to its stdin as raw bytes:
+        text mode on Windows would turn LF line endings into CRLF, which bash
+        rejects (`set: pipefail\\r: invalid option name`)."""
         argv = ["ssh", *self.options, "-p", str(self.port), f"root@{self.host}", command]
-        result = subprocess.run(
-            argv, input=script, capture_output=capture, text=True, encoding="utf-8",
-            errors="replace", timeout=timeout,
+        raw = subprocess.run(
+            argv,
+            input=script.encode("utf-8") if script is not None else None,
+            stdin=None if script is not None else subprocess.DEVNULL,
+            capture_output=True, timeout=timeout,
+        )
+        result = subprocess.CompletedProcess(
+            argv, raw.returncode,
+            raw.stdout.decode("utf-8", errors="replace"), raw.stderr.decode("utf-8", errors="replace"),
         )
         if check and result.returncode != 0:
-            detail = (result.stderr or "")[-2000:] if capture else ""
-            raise RuntimeError(self.config.redact(f"ssh `{command}` exited {result.returncode}: {detail}"))
+            raise RuntimeError(self.config.redact(f"ssh `{command}` exited {result.returncode}: {result.stderr[-2000:]}"))
         return result
 
     def upload(self, local_path, remote_path):
         subprocess.run(["scp", *self.options, "-P", str(self.port), str(local_path), f"root@{self.host}:{remote_path}"],
-                       check=True, capture_output=True)
+                       check=True, capture_output=True, stdin=subprocess.DEVNULL)
 
     def download(self, remote_path, local_path):
         subprocess.run(["scp", *self.options, "-P", str(self.port), f"root@{self.host}:{remote_path}", str(local_path)],
-                       check=True, capture_output=True)
+                       check=True, capture_output=True, stdin=subprocess.DEVNULL)
 
     def wait_ready(self, timeout_s=900):
         deadline = time.time() + timeout_s
@@ -217,7 +258,7 @@ class Remote:
                     return
             except subprocess.TimeoutExpired:
                 pass
-            time.sleep(10)
+            _sleep(10)
         raise RuntimeError(f"ssh to {self.host}:{self.port} not ready after {timeout_s}s")
 
 
@@ -338,9 +379,11 @@ def run_on_gpu(config, gpu, args, source, commit, tarball):
         ua_args = ["run", args.experiment, "--out-dir", f"results/remote/{run_id}/{args.experiment}", *args.experiment_args]
 
     if args.offer:
-        offers = [o for o in search_offers(config, gpu, args.disk, None, False, 0.0, 200) if o.get("id") == args.offer]
+        offers = [o for o in search_offers(config, gpu, args.disk, None, False, 0.0, 200, args.exclude_countries)
+                  if o.get("id") == args.offer]
     else:
-        offers = search_offers(config, gpu, args.disk, args.max_dph, args.exclusive)
+        offers = search_offers(config, gpu, args.disk, args.max_dph, args.exclusive,
+                               exclude_countries=args.exclude_countries)
     if not offers:
         raise RuntimeError(f"no rentable verified {gpu} offers matching the filters (try --max-dph / no --exclusive)")
     offer = offers[0]
@@ -350,6 +393,8 @@ def run_on_gpu(config, gpu, args, source, commit, tarball):
     instance_id = created.get("new_contract")
     if not instance_id:
         raise RuntimeError(f"instance creation failed: {created}")
+    with _active_lock:
+        _ACTIVE[instance_id] = gpu
     log(prefix, f"instance {instance_id} created (destroy manually at https://cloud.vast.ai/instances/ if this process dies)")
     local_dir.mkdir(parents=True, exist_ok=True)
     (local_dir / "vast_offer.json").write_text(json.dumps(offer, indent=2, default=str))
@@ -370,7 +415,7 @@ def run_on_gpu(config, gpu, args, source, commit, tarball):
                 log(prefix, f"status: {status} {info.get('status_msg') or ''}".strip())
             if status == "running":
                 break
-            time.sleep(15)
+            _sleep(15)
         else:
             raise RuntimeError(f"instance not running after {args.boot_timeout}s")
 
@@ -378,7 +423,7 @@ def run_on_gpu(config, gpu, args, source, commit, tarball):
         while endpoint is None and time.time() < deadline + 300:
             endpoint = ssh_endpoint(config, instance_id)
             if endpoint is None:
-                time.sleep(10)
+                _sleep(10)
         if endpoint is None:
             raise RuntimeError("no ssh endpoint for instance")
         remote = Remote(config, *endpoint, prefix)
@@ -388,17 +433,18 @@ def run_on_gpu(config, gpu, args, source, commit, tarball):
         if source == "upload":
             remote.upload(tarball, "/workspace/ua-mbrl-src.tgz")
         log(prefix, f"installing {source} {commit[:12]} (uv sync)")
-        result = remote.ssh("bash -s", script=bootstrap_script(config, source, commit.replace("-dirty", "")), timeout=3600)
+        result = remote.ssh("bash -s", script=bootstrap_script(config, source, commit.replace("-dirty", "")),
+                            check=False, timeout=3600)
         (local_dir / "bootstrap.log").write_text(config.redact(result.stdout + result.stderr), encoding="utf-8")
+        if result.returncode != 0:
+            raise RuntimeError(f"setup failed (exit {result.returncode}); see {local_dir / 'bootstrap.log'}: "
+                               + config.redact(result.stderr.strip()[-500:]))
         log(prefix, "environment ready; " + " ".join(result.stdout.strip().splitlines()[-1:]))
 
         command, remote_out = launch_command(run_id, commit, ua_args)
         log(prefix, f"launching: ua-mbrl {' '.join(ua_args)}")
         remote.ssh(command)
         stream_until_done(remote, remote_out, prefix, args.max_hours, started)
-    except KeyboardInterrupt:
-        log(prefix, "interrupted")
-        raise
     except Exception as error:  # noqa: BLE001 -- report, fetch what exists, clean up
         log(prefix, f"!! {config.redact(str(error))}")
     finally:
@@ -437,11 +483,14 @@ def stream_until_done(remote, remote_out, prefix, max_hours, started):
             return
         if time.time() - started > max_hours * 3600:
             raise RuntimeError(f"--max-hours {max_hours} exceeded; fetching partial results")
-        time.sleep(30)
+        _sleep(30)
 
 
 def fetch_results(remote, run_id, local_dir, prefix):
     archive = f"/workspace/{run_id}.tgz"
+    if remote.ssh(f"test -d {REMOTE_ROOT}/results/remote/{run_id}", check=False, timeout=60).returncode != 0:
+        log(prefix, "no remote results to fetch (the run did not start)")
+        return
     remote.ssh(f"cd {REMOTE_ROOT}/results/remote && tar -czf {archive} {run_id}", timeout=900)
     local_archive = local_dir / f"{run_id}.tgz"
     remote.download(archive, local_archive)
@@ -460,15 +509,32 @@ def cmd_run(config, args):
     source, commit = resolve_source(config, args.source)
     tarball = working_tree_tarball() if source == "upload" else None
     print(f"[source] {source} @ {commit[:12]}; GPUs: {', '.join(args.gpu)}; image {config.image}")
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(args.gpu))
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(args.gpu)) as pool:
-            futures = {pool.submit(run_on_gpu, config, gpu, args, source, commit, tarball): gpu for gpu in args.gpu}
-            for future in concurrent.futures.as_completed(futures):
+        futures = {pool.submit(run_on_gpu, config, gpu, args, source, commit, tarball): gpu for gpu in args.gpu}
+        pending = set(futures)
+        while pending:
+            try:
+                done, pending = concurrent.futures.wait(pending, timeout=1)
+            except KeyboardInterrupt:
+                if not _STOP.is_set():
+                    _STOP.set()
+                    print("\n[ctrl-c] stopping: fetching partial results and destroying instances "
+                          "(Ctrl-C again to destroy immediately)", flush=True)
+                    continue
+                print("\n[ctrl-c] destroying instances now", flush=True)
+                with _active_lock:
+                    active = dict(_ACTIVE)
+                for instance_id, gpu in active.items():
+                    destroy_instance(config, instance_id, gpu)
+                raise SystemExit(130) from None
+            for future in done:
                 try:
                     future.result()
                 except Exception as error:  # noqa: BLE001
                     log(futures[future], f"!! {config.redact(str(error))}")
     finally:
+        pool.shutdown(wait=False, cancel_futures=True)
         if tarball:
             tarball.unlink(missing_ok=True)
     return 0
@@ -477,7 +543,8 @@ def cmd_run(config, args):
 def cmd_offers(config, args):
     # Offer search works without an API key.
     for gpu in args.gpu:
-        offers = search_offers(config, gpu, args.disk, args.max_dph, args.exclusive, limit=args.limit)
+        offers = search_offers(config, gpu, args.disk, args.max_dph, args.exclusive, limit=args.limit,
+                               exclude_countries=args.exclude_countries)
         print(f"\n{gpu}: {len(offers)} offer(s)")
         for offer in offers:
             print("  " + describe_offer(offer))
@@ -520,6 +587,8 @@ def build_parser():
         p.add_argument("--disk", type=int, default=40, help="GB")
         p.add_argument("--max-dph", type=float, default=None, help="max $/hour")
         p.add_argument("--exclusive", action="store_true", help="only offers renting the whole machine (latency runs)")
+        p.add_argument("--exclude-countries", nargs="*", default=list(DEFAULT_EXCLUDED_COUNTRIES),
+                       help="ISO country codes to skip (default: CN VN; pass the flag with no codes to allow all)")
 
     run = commands.add_parser("run", help="rent, run, fetch results, destroy")
     gpu_filters(run)

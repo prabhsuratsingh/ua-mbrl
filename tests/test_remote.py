@@ -126,3 +126,56 @@ def test_run_on_gpu_flow_always_fetches_and_destroys(tmp_path, monkeypatch, fail
     record = json.loads((local_dir / "vast_run.json").read_text())
     assert record["instance_id"] == 99 and record["ua_args"][:2] == ["suite", "smoke"]
     assert ("upload", "/workspace/ua-mbrl-src.tgz") in FakeRemote.calls
+
+
+def test_ssh_sends_script_as_lf_bytes_and_no_console_stdin(monkeypatch):
+    """Regression: on Windows, text-mode stdin turned \n into \r\n and bash
+    failed with `set: pipefail\r: invalid option name`."""
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(kwargs)
+        return vast.subprocess.CompletedProcess(argv, 0, b"out\n", b"")
+
+    monkeypatch.setattr(vast.subprocess, "run", fake_run)
+    remote = vast.Remote(vast.Config({}), "host", 22, "test")
+    result = remote.ssh("bash -s", script="set -euo pipefail\necho hi\n")
+    assert calls[0]["input"] == b"set -euo pipefail\necho hi\n"
+    assert b"\r" not in calls[0]["input"]
+    assert result.stdout == "out\n"
+    remote.ssh("true")
+    assert calls[1]["stdin"] is vast.subprocess.DEVNULL and calls[1]["input"] is None
+
+
+def test_offers_exclude_countries(monkeypatch):
+    queries = []
+
+    def fake_vast(config, *args, raw=True, check=True):
+        queries.append(args[2])
+        return [{"id": 1, "geolocation": "Vietnam, VN"}, {"id": 2, "geolocation": "Germany, DE"},
+                {"id": 3, "geolocation": "Jiangsu, CN"}, {"id": 4, "geolocation": None}]
+
+    monkeypatch.setattr(vast, "vast", fake_vast)
+    offers = vast.search_offers(vast.Config({}), "RTX_4090", 40)
+    assert [o["id"] for o in offers] == [2, 4]
+    assert "geolocation notin [CN,VN]" in queries[0]
+    assert [o["id"] for o in vast.search_offers(vast.Config({}), "RTX_4090", 40, exclude_countries=[])] == [1, 2, 3, 4]
+    assert "geolocation" not in queries[1]
+
+
+def test_destroy_skips_confirmation_prompt(monkeypatch):
+    seen = []
+    monkeypatch.setattr(vast, "vast", lambda config, *args, raw=True, check=True: seen.append(args) or "")
+    vast._ACTIVE[123] = "RTX_4090"
+    assert vast.destroy_instance(vast.Config({}), 123, "t")
+    assert seen == [("destroy", "instance", "123", "-y")]
+    assert 123 not in vast._ACTIVE
+
+
+def test_stop_event_interrupts_waits():
+    vast._STOP.set()
+    try:
+        with pytest.raises(RuntimeError, match="Ctrl-C"):
+            vast._sleep(30)
+    finally:
+        vast._STOP.clear()

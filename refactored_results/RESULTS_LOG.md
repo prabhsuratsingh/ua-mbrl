@@ -333,3 +333,31 @@ balance.
 1. **[Strong] `paper_arxiv/main.tex` is consistent with the 2026-10-26/27 and
    2026-10-30 entries.** The older `.tex` files are not, and now carry a
    SUPERSEDED header comment.
+
+## 2026-11-06 · First vast.ai smoke run: failed in setup (no results)
+
+**Command:** `uv run ua-mbrl remote run --gpu RTX_4090 --suite smoke`. The
+source was the uploaded working tree at `02802ec0c36d`.
+
+**What happened:**
+- **Machine:** offer 59203547, an RTX 4090 in Vietnam at $0.389/h, instance
+  59377908. It was running within about 40 s and SSH worked.
+- **Setup failed:** `set: pipefail\r: invalid option name`. Python on Windows
+  sent the setup script over SSH in text mode, which converts line endings
+  to CRLF.
+- **Automatic destroy failed:** it stopped at vastai's interactive
+  confirmation prompt. The instance was gone when checked afterwards.
+  Cost: about $0.01.
+- **Exit hung:** the run did not exit until Ctrl-C.
+
+**Fixes in `src/ua_mbrl/remote/vast.py`, all covered by regression tests in
+`tests/test_remote.py`:**
+- the setup script is sent as raw LF bytes;
+- `destroy instance -y`;
+- no child process reads the console's stdin;
+- the first Ctrl-C stops all workers cleanly: each fetches partial results
+  and destroys its instance. A second Ctrl-C destroys every active instance
+  immediately;
+- `bootstrap.log` is saved even when setup fails;
+- CN and VN offers are excluded by default (`--exclude-countries`), because
+  hosts there were unreliable for the user in the past.
