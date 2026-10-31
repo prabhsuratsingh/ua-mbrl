@@ -49,6 +49,15 @@ SUITES = {
         ("crossover_sweep", "crossover_sweep", []),
         ("gpu_benchmark", "gpu_benchmark", ["--horizon", "10"]),
     ],
+    # The four pilot-RNG-dependent experiments under the current (isolated)
+    # controller: the values paper_arxiv/main.tex reports for them. Their
+    # replicate-suite counterparts use the pre-fix controller instead.
+    "current_controller": [
+        ("confound_check", "confound_check", []),
+        ("fallback", "fallback", []),
+        ("mujoco_regulation_sigma1", "mujoco_regulation", ["--sigma", "1.0"]),
+        ("reacher", "reacher", []),
+    ],
     "smoke": [
         ("claim_a", "claim_a", ["--cases", "300:nominal", "--num-seeds", "3", "--eval-steps", "3", "--sigmas", "1.0", "2.0"]),
         ("crossover_sweep", "crossover_sweep", ["--k-values", "100", "300", "--num-seeds", "2", "--eval-steps", "2"]),

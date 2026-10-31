@@ -241,3 +241,95 @@ evaluations per second.
 8. **[Strong] Five paper numbers still have no producing script:**
    `tab:sigmasweep`, the 33.95× seed-batching row, two other rows of
    `tab:gpuspeedups`, and the Claim A K=1000 nominal row.
+
+---
+
+## 2026-10-30 · Derived statistics for `paper_arxiv/main.tex` (no new runs)
+
+**What:** no experiment was rerun. All numbers below are recomputed from the
+2026-10-26/27 records by `uv run python paper_arxiv/make_figures.py`, which
+prints them. They use the current controller: `current_controller/` for the
+four pilot-RNG-dependent experiments, `replicate/` for everything else.
+
+### Numbers
+
+- **Matched-ceiling paired sign tests (n=20):**
+  - σ=1.0: K=1000 record 2 / 8 / 10, p=0.109; K=8000 record 3 / 7 / 10, p=0.344.
+  - Retuned σ: K=1000 record 4 / 1 / 15, p=0.375; K=8000 record 3 / 3 / 14, p=1.000.
+  - Records are fixed wins / adaptive wins / ties.
+- **σ sweeps from the Claim A records (n=40, σ = 1–6):** these replace the
+  unscripted `tab:sigmasweep`.
+  - At the ceiling, σ=1.0 gives 17.5% / 12.5% / 12.5% at K = 3000 / 8000 / 16000.
+  - At matched K = 403 and 682, every σ ≥ 2 reaches at least adaptive's 82.5%.
+    At mismatch K=284, every σ ≥ 3 is above adaptive's 50%.
+- **Adaptive escalation rate in the crossover sweep (σ=1.0):** 2.33–3.00% at
+  every K_max from 300 to 26000.
+- **Crossover adaptive latency:** 685–908 ms, CV 8.7%. Regression slope
+  0.0958 ms/rollout, against 0.0525 in the paper (1.83×).
+- **MuJoCo per-command latency (± t):**
+  - regulation σ=1.0: single 42.1 ± 0.3 ms, ensemble 56.0 ± 0.3 ms, adaptive 57.5 ± 0.3 ms;
+  - reacher: single 41.6 ms, ensemble 49.3 ms, adaptive 50.8 ms;
+  - the pilot adds about 1.5 ms in each case.
+- **Seed-level MuJoCo comparisons:**
+  - Regulation σ=1.0: ensemble beats single on 7 / 15 seeds and loses on 3.
+  - Reacher: worst-seed final distance is single 0.592, ensemble 0.275,
+    adaptive 0.366.
+- **OOD ensemble RMSE ratio (OOD / in-distribution):** 1.12, 0.95, 0.79, 0.71,
+  0.70, 0.70, 0.75, 0.84, 0.93 for shift 0.0–4.0.
+- **TPR at 5% FPR:** 0.041, 0.021, 0.064, 0.129, 0.285, 0.448, 0.622, 0.878,
+  1.000.
+
+### Observations
+
+1. **[Moderate, one ensemble] Disagreement tracks input novelty, not
+   prediction error.** The uncertainty ratio rises to 4.27× while the
+   ensemble's RMSE ratio stays at or below 1.12×. The RMSE ratio is below 1 at
+   every shift from 0.5 to 4.0.
+2. **[Moderate] Low escalation is a property of calibration, not of K_max.**
+   The escalation rate is about 2.5% at every K_max, below the 5% calibration
+   target. The calibration states are uniform initial states, while
+   closed-loop trajectories settle in the well-modelled upright region.
+3. **[Moderate] The Claim A conclusion survives the best-σ selection on the
+   test seeds.** Most σ values beat adaptive at matched K, so picking the best
+   σ on the same seeds does not create the result.
+
+## 2026-11-06 · Number check of `paper_arxiv/main.tex` (no new runs)
+
+**What:** no experiment was rerun. Every number in `paper_arxiv/main.tex` was
+compared with the output of `uv run python paper_arxiv/make_figures.py`, and
+with the claim_a and crossover records for the σ-sweep table and the earlier
+regression.
+
+**Result:** all numbers agree, including:
+- the Claim A, σ-sweep, matched-ceiling, fallback, MuJoCo, crossover and
+  earlier-controller tables;
+- the 28× and 41% figures, the 2.3–3.0% escalation range, and the 0.70–1.12
+  RMSE ratios;
+- the earlier crossover slope of 0.0525 ms/rollout, mean adaptive latency of
+  767 ms, and K* = 14,773.
+
+**Text corrections made:**
+- distribution notation `NC(·)` → `\mathcal{U}(·)`;
+- "accounts for every discrepancy" narrowed to seeded results, since the
+  crossover shift has a separate cause (GPU state);
+- the conclusion compared interpolation with regression (15,600 → 8,700). It
+  now reads 15,600 → 8,200 by interpolation (14,773 → 8,687 by regression).
+
+**Reproduction path corrected:**
+- New suite `current_controller` produces the four isolated-controller
+  results the paper quotes. The `replicate` suite produces their shared-stream
+  versions instead.
+- `make_figures.py` now takes `--runs`. With the default path it gives output
+  identical to before.
+- Appendix E updated to match.
+
+**Not verified:** the paper has not been compiled, because no LaTeX
+installation is available on this machine. Static checks pass: all
+references, citations and figure files resolve, and environments and braces
+balance.
+
+### Observations
+
+1. **[Strong] `paper_arxiv/main.tex` is consistent with the 2026-10-26/27 and
+   2026-10-30 entries.** The older `.tex` files are not, and now carry a
+   SUPERSEDED header comment.
