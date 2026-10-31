@@ -348,7 +348,16 @@ def bootstrap_script(config, source, commit):
     else:
         lines += [f"tar -xzf /workspace/ua-mbrl-src.tgz -C {REMOTE_ROOT}", f"cd {REMOTE_ROOT}"]
     lines += [
-        "uv sync --frozen --quiet",
+        # torch's CUDA wheels (hundreds of MB each, from pypi.nvidia.com) can
+        # time out on slow host links: long timeouts, more retries, fewer
+        # parallel downloads, and whole-sync retries (finished wheels stay in
+        # uv's cache, so a retry only fetches what is missing).
+        "export UV_HTTP_TIMEOUT=600 UV_HTTP_RETRIES=10 UV_CONCURRENT_DOWNLOADS=4",
+        "for attempt in 1 2 3 4; do",
+        "  if uv sync --frozen --quiet; then break; fi",
+        "  if [ \"$attempt\" = 4 ]; then echo 'uv sync failed 4 times' >&2; exit 1; fi",
+        "  echo \"uv sync attempt $attempt failed; retrying in 20s\" >&2; sleep 20",
+        "done",
         "uv run --frozen ua-mbrl env",
         "nvidia-smi --query-gpu=name,driver_version,memory.total,clocks.max.sm --format=csv",
     ]

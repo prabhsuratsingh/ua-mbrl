@@ -361,3 +361,30 @@ source was the uploaded working tree at `02802ec0c36d`.
 - `bootstrap.log` is saved even when setup fails;
 - CN and VN offers are excluded by default (`--exclude-countries`), because
   hosts there were unreliable for the user in the past.
+
+## 2026-11-06 · Second vast.ai smoke run: failed downloading CUDA wheels (no results)
+
+**Command:** `uv run ua-mbrl remote run --gpu RTX_4090 --suite smoke`. The
+source was the uploaded working tree at `788faaa5b548`.
+
+**What happened:**
+- **Machine:** offer 41644200, an RTX 4090 in Czechia at $0.394/h, instance
+  59379186.
+- **The previous fixes held:** setup ran, the failure was reported with
+  `bootstrap.log` saved, the instance was destroyed automatically, and the
+  run exited normally. Cost: about $0.04 over 0.10 h.
+- **Setup failed:** `uv sync` could not download
+  `nvidia-cufft-cu12==11.3.3.83` from `pypi.nvidia.com`. The error was
+  "operation timed out", after uv's default 3 retries in 125 s.
+
+**Fix:** the setup script now sets `UV_HTTP_TIMEOUT=600`,
+`UV_HTTP_RETRIES=10` and `UV_CONCURRENT_DOWNLOADS=4`, and retries the whole
+`uv sync` up to 4 times. Wheels already downloaded stay in uv's cache, so a
+retry only fetches what is missing. Tested with a bash syntax check and a
+dry run of the retry loop with a stand-in `uv`.
+
+### Observations
+
+1. **[Weak, one host] Download speed from a host to `pypi.nvidia.com` varies.**
+   Setup time on vast.ai depends on the host's network as well as the GPU.
+   Budget 10–20 min of setup per rental.
