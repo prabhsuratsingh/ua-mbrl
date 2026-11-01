@@ -584,3 +584,95 @@ MuJoCo matched budget, isolated: fixed 79.2 ± 25.5% vs adaptive
    70.8%. The matched-budget direction holds (fixed ≥ adaptive on every
    seed). With intervals of about ±30 points, none of these differences is
    informative.
+
+## 2026-11-06 · Current-controller suite on an RTX 5090 (vast.ai)
+
+**Command:** `uv run ua-mbrl remote run --gpu RTX_5090 --suite current_controller`.
+The source was the uploaded tree at commit `9c15260`, with `git_dirty`
+false.
+
+**Run directory:** `results/vast/rtx_5090/current_controller-20261106-132115/`.
+The statistics are printed by `paper_arxiv/make_figures.py` (its
+`--second-current` option defaults to the latest such run).
+
+**Hardware:**
+- GPU: RTX 5090 32 GB, driver 580.178.04.
+- CPU: AMD Ryzen 7 7800X3D, 8 cores.
+- Host: South Korea, offer 45669277, instance 59386519.
+- This is a different host from the `replicate` run, which used an Intel
+  Core Ultra 9 285K with driver 610.43.02.
+
+**Time and cost:** 0.17 h, about $0.09. Most of the time was the four
+experiments themselves (about 7 min).
+
+All four experiments use the current controller (isolated pilot). They are
+compared with the GTX 1650's `current_controller/` run.
+
+### Numbers
+
+- **Confound check (σ=1, n=20):**
+
+  | K_max | fixed / adaptive | record F / A / T |
+  |---|---|---|
+  | 100 | 0.75 / 0.75 | 0 / 0 / 20 |
+  | 1000 | 0.40 / 0.70 | 2 / 8 / 10 |
+  | 8000 | 0.45 / 0.70 | 2 / 7 / 11 |
+
+  The GTX 1650 gave 0.45 / 0.65 at K=8000; the rest is the same.
+- **Fallback:** identical to the GTX 1650 current-controller run. Mismatch:
+  success 0.800 / 0.467 / 0.000, fired 0%. Default ω kick: 0.400, fired 0%.
+  Narrow ensemble: 0.333, fired 9.2%.
+- **MuJoCo regulation σ=1.0 (n=15, ± t):**
+
+  | method | success | latency | same success as GTX 1650 |
+  |---|---|---|---|
+  | single | 40.0 ± 14.3% | 7.39 ms | 10/15 seeds |
+  | ensemble | 60.0 ± 14.3% | 10.95 ms | 7/15 seeds |
+  | adaptive | 55.6 ± 16.6% (eff. K 203.9) | 11.32 ms | 13/15 seeds |
+
+  The ensemble beats the single model on 10 seeds and loses on 3.
+- **Reaching (n=10, ± t):**
+
+  | method | success | final distance | worst seed | latency |
+  |---|---|---|---|---|
+  | single | 16.7 ± 11.2% | 0.351 ± 0.098 | 0.601 | 7.12 ms |
+  | ensemble | 35.0 ± 16.3% | 0.194 ± 0.034 | 0.289 | 9.21 ms |
+  | adaptive | 30.0 ± 11.0% | 0.214 ± 0.045 | 0.377 | 9.60 ms |
+
+  Success on every seed matches the GTX 1650 for all three methods; only the
+  distances differ slightly.
+
+### Observations
+
+1. **[Moderate, two GPUs] With the current controller, adaptive does not
+   beat the ensemble on MuJoCo regulation.** It is 55.6% vs 60.0% here, and
+   55.6% vs 55.6% on the GTX 1650. This confirms on independent hardware
+   that `tab:mujoco`'s 62.2% (adaptive ahead) came from the pre-fix
+   controller.
+   - The ensemble's advantage over the single model holds on both GPUs:
+     here 60.0% vs 40.0% (10 seeds better, 3 worse); on the GTX 1650 55.6%
+     vs 44.4% (7 better, 3 worse).
+
+2. **[Moderate] The reaching results are the most hardware-robust MuJoCo
+   result.** Success matches on every seed and method across GPUs. The
+   ensemble's worst-seed distance (0.289 vs the single model's 0.601) again
+   about halves the single model's.
+
+3. **[Moderate, one comparison] Per-command latency depends on the host, not
+   only the GPU model.**
+   - On the same GPU model, this host (Ryzen 7 7800X3D, driver 580) is about
+     1.4× slower per MuJoCo command than the `replicate` host (Core Ultra 9
+     285K, driver 610). For regulation at σ=1 the ensemble is 10.95 vs
+     7.26 ms; single 7.39 vs 5.31; adaptive 11.32 vs 7.55.
+   - That run used the pre-fix pilot, which does not change the amount of
+     compute.
+   - At these sizes the controller is bound by launch and CPU overhead, so
+     the host CPU and driver set the latency.
+   - Consequence for the latency study: compare GPUs only within one rental,
+     with repeats, and record the host CPU. The crossover on the "same" GPU
+     model can move with the host.
+
+4. **[Strong] The fallback and confound conclusions transfer across GPUs.**
+   The fallback never fires under parameter mismatch, and fires on 9.2% of
+   steps for the narrow ensemble after a state kick. At σ=1, adaptive's
+   apparent lead over fixed-high at K=1000 and 8000 appears on both GPUs.
