@@ -67,6 +67,15 @@ records. Latency is reported for information only, because it depends on the
 hardware. The suite runs each experiment in a fresh process, and a stopped
 suite resumes when you rerun it with the same `--out-dir`.
 
+**Exact matches need the same GPU architecture.** The published numbers come
+from a GTX 1650, a Turing GPU. Another architecture will produce mismatches
+in `check` even with identical software and seeds. On an RTX 5090
+(Blackwell), training, calibration, the OOD sweep and the small-budget
+studies were identical, but 8–18% of large-batch closed-loop seed outcomes
+changed. Treat a run on other hardware as a fresh random draw of each
+experiment. Compare directions and intervals, not exact values. See
+`refactored_results/RESULTS_LOG.md`.
+
 **Results from before the pilot-RNG fix.** `tab:confound`, `tab:mujoco`
 (regulation and reaching) and the narrow-ensemble fallback rate were produced
 with the controller as it was before that fix. At the time, the adaptive

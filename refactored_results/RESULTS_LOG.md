@@ -422,3 +422,165 @@ not the paper's S = 20.
 - `ua-mbrl suite` compares only `replicate` and `replicate_quick` against
   the paper. `smoke` has no targets, and `current_controller` is meant to
   differ from them.
+
+## 2026-11-06 · Full replication on an RTX 5090 (vast.ai)
+
+**Command:** `uv run ua-mbrl remote run --gpu RTX_5090 --suite replicate`.
+The source was the uploaded tree at commit `5ad4a60`, with `git_dirty`
+false.
+
+**Run directory:** `results/vast/rtx_5090/replicate-20261106-122442/`. The
+statistics are printed by `uv run python paper_arxiv/make_figures.py` (its
+`--second` option defaults to the latest RTX 5090 run).
+
+**Hardware and software:**
+- GPU: RTX 5090 32 GB, Blackwell, driver 610.43.02, 3090 MHz maximum SM
+  clock.
+- CPU: Intel Core Ultra 9 285K. Host in Mexico, offer 58979848.
+- Software: torch 2.11.0+cu128, the same build as on the GTX 1650.
+
+**Time and cost:** the whole suite took 0.274 h and cost about $0.17. The same
+suite took about 2.6 h on the GTX 1650.
+
+**Controller per experiment:** as in the `replicate` suite.
+- Isolated (current controller): Claim A, matched ceiling, stratified, OOD,
+  MuJoCo σ=0.2, MuJoCo matched budget, crossover.
+- Shared (pre-fix): confound check, fallback, MuJoCo σ=1.0, reacher. Their
+  isolated counterparts on the 5090 still need the `current_controller`
+  suite (pending).
+
+### Numbers: Claim A, matched sample budget (n=40, isolated)
+
+| K_max | condition | adaptive (Wilson CI) | eff. K | escalation | fixed @ matched K (σ) | record F / A / T | p |
+|---|---|---|---|---|---|---|---|
+| 3000 | nominal | 75.0% [59.8, 85.8] | 306.6 | 2.81% | 87.5% @307 (σ 2) | 10 / 5 / 25 | 0.302 |
+| 8000 | nominal | 80.0% [65.2, 89.5] | 466.9 | 3.06% | 95.0% @467 (σ 5) | 7 / 1 / 32 | 0.070 |
+| 16000 | nominal | 82.5% [68.1, 91.3] | 652.3 | 2.69% | 95.0% @652 (σ 3) | 7 / 2 / 31 | 0.180 |
+| 1000 | mild mismatch | 47.5% [32.9, 62.5] | 282.4 | 6.38% | 65.0% @282 (σ 4) | 11 / 4 / 25 | 0.118 |
+
+- The ceiling controller reaches 100% at every nominal K_max and 75% under
+  mismatch, as on the GTX 1650.
+- The threshold is 0.008571, identical to the GTX 1650.
+- Adaptive's per-seed outcomes agree with the GTX 1650 run on 88%, 92%, 90%
+  and 82% of seeds.
+- σ sweeps:
+  - At the ceiling, σ=1 gives 30.0% / 22.5% / 15.0% at K = 3000 / 8000 / 16000.
+  - At matched K: K=307 gives 55.0 / 87.5 / 87.5 / 82.5 / 87.5 / 80.0 for
+    σ = 1–6; K=467 gives 60.0 / 82.5 / 82.5 / 87.5 / 95.0 / 87.5; K=652 gives
+    45.0 / 85.0 / 95.0 / 90.0 / 90.0 / 92.5; mismatch K=282 gives
+    32.5 / 45.0 / 52.5 / 65.0 / 57.5 / 65.0.
+
+### Numbers: matched ceiling (n=20, isolated)
+
+| K_max | σ=1.0, fixed / adaptive (F/A/T) | retuned σ, fixed / adaptive (F/A/T) |
+|---|---|---|
+| 100 | 0.75 / 0.75 (0/0/20) | 0.75 / 0.75 (0/0/20) |
+| 1000 | 0.40 / 0.70 (2/8/10) | 0.80 / 0.70 (3/1/16) |
+| 8000 | 0.45 / 0.70 (2/7/11) | 0.70 / 0.70 (3/3/14) |
+
+The GTX 1650 gave 0.90 / 0.75 (4/1/15) at K=1000 retuned, and 0.45 / 0.65
+(3/7/10) at K=8000 with σ=1.
+
+### Numbers: latency crossover (fresh process per K_max, 20 seeds, 30 steps, 1 repeat)
+
+| K_max | 100 | 1000 | 3000 | 8000 | 12000 | 16000 | 20000 | 26000 |
+|---|---|---|---|---|---|---|---|---|
+| fixed ms | 5.10 | 5.03 | 12.95 | 35.83 | 53.03 | 70.37 | 87.55 | 113.32 |
+| adaptive ms | 95.35 | 96.90 | 94.93 | 96.63 | 100.28 | 96.01 | 95.66 | 102.92 |
+| ratio | 0.053 | 0.052 | 0.136 | 0.371 | 0.529 | 0.733 | 0.915 | 1.101 |
+
+- **Crossover:** interpolated K_max ≈ 22,737; regression K* ≈ 22,278.
+- **Fit:** slope 0.00435 ms per rollout, intercept 0.64 ms, R² = 0.9999,
+  n = 10.
+- **Adaptive latency:** 94.4–102.9 ms, mean 97.5 ms, coefficient of
+  variation 3.0%.
+- **Escalation rate:** 2.3–3.0% at every K_max ≥ 300.
+- **Fixed controller below K = 1000:** flat at 5.0–5.2 ms.
+
+### Numbers: MuJoCo
+
+| run | controller | single | ensemble | adaptive | latency ms (single / ens / adapt) |
+|---|---|---|---|---|---|
+| regulation σ=0.2, n=8 | isolated | 45.8 ± 29.6% | 62.5 ± 17.9% | 70.8 ± 31.4% (eff. K 195.8) | 5.47 / 7.85 / 8.17 |
+| regulation σ=1.0, n=15 | shared | 37.8 ± 13.7% | 53.3 ± 16.8% | 66.7 ± 14.0% (eff. K 200.5) | 5.31 / 7.26 / 7.55 |
+| reaching, n=10 | shared | 16.7 ± 11.2%, dist 0.347 | 35.0 ± 16.3%, dist 0.195 | 35.0 ± 16.3%, dist 0.207 | 5.36 / 6.71 / 6.99 |
+
+MuJoCo matched budget, isolated: fixed 79.2 ± 25.5% vs adaptive
+70.8 ± 31.4%, record 2 / 6 / 0, p = 0.50. Mean matched K is 195.9. The GTX
+1650 gave 83.3% vs 70.8%, record 3 / 5 / 0.
+
+### Numbers: other experiments
+
+- **Bit-identical to the GTX 1650:**
+  - the OOD sweep: every AUC and ratio;
+  - the stratified study: every per-seed outcome, ESS trace and K choice;
+  - `confound_check` at K=100 (0.75 / 0.35);
+  - the fallback trigger rates, including 8.7% for the narrow ensemble.
+- **`confound_check`, shared:** K=1000 gives 0.40 / 0.30 and K=8000 gives
+  0.45 / 0.35. Published: 0.40 / 0.35 and 0.45 / 0.40.
+- **Ensemble inference, E=5, horizon 10:**
+  - CUDA, loop vs batched: 2.91 vs 1.59 ms at K=100, 2.93 vs 1.59 at K=500,
+    2.93 vs 1.60 at K=1000. That is 1.83× at K=1000, with 31.2 M model
+    evaluations per second batched.
+  - CPU: 22.44 vs 20.62 ms at K=1000.
+
+### Observations
+
+1. **[Strong] Seeded results are bit-reproducible within a GPU, but not
+   across GPU architectures, even with identical software.**
+   - On identical code, torch, CUDA build and seeds, the GTX 1650 (Turing)
+     and RTX 5090 (Blackwell) give identical calibration thresholds. The OOD
+     sweep and the stratified study (K ≤ 300) also match bit-for-bit.
+   - The closed-loop runs with large rollout batches differ. In Claim A, 8–18%
+     of adaptive per-seed outcomes flip, and the MuJoCo per-seed records
+     differ.
+   - The most likely cause is float32 rounding differences between GPU
+     kernels chosen for large batch shapes, amplified by the sensitive
+     swing-up and regulation dynamics.
+   - Consequence: "exact replication" holds only on the same GPU
+     architecture. A run on another GPU behaves like an independent random
+     draw of the same experiment.
+
+2. **[Moderate] The Claim A direction replicates on the RTX 5090; its
+   significance does not.**
+   - In all four cases, fixed at the matched budget ≥ adaptive, and fixed has
+     more paired wins (10/5, 7/1, 7/2, 11/4).
+   - But no case reaches p < 0.05: the p-values are 0.302, 0.070, 0.180 and
+     0.118. On the GTX 1650, K=16000 (p = 0.016) and mismatch (p = 0.031)
+     did.
+   - The per-case significance in the paper therefore depends on the exact
+     float trajectory. Claims must rest on the consistent direction. More
+     seeds or ensembles, as in plan Phase 1, are needed for per-case
+     significance.
+
+3. **[Moderate] "Adaptive scores exactly 82.5% at all three nominal budgets"
+   was specific to the GTX 1650.** On the RTX 5090 it is 75.0%, 80.0% and
+   82.5%. The mechanism holds: escalation stays at 2.7–3.1% of nominal steps
+   and 6.4% under mismatch, and adaptive stays below the matched fixed
+   controller.
+
+4. **[Strong for these two machines, single repeat] The latency crossover
+   depends on the hardware.**
+   - It is K* ≈ 22,300–22,700 on the RTX 5090 host, against 8,200–8,700 on
+     today's GTX 1650 and 15,600 in the earlier GTX 1650 measurement.
+   - The fixed controller's per-rollout slope is 22× smaller
+     (0.00435 vs 0.0958 ms per rollout).
+   - The adaptive controller's flat latency is only 8.2× smaller
+     (97.5 vs 795.6 ms). It is bound by launch and CPU overhead, so it
+     improves less, and the crossover moves up by 2.6×.
+   - Below K ≈ 1000 the RTX 5090's fixed controller is entirely launch-bound
+     (flat 5 ms).
+   - Adaptive latency is much steadier on this host (coefficient of
+     variation 3.0% vs 8.7%).
+
+5. **[Moderate] Batched inference still helps on a current GPU.** It is 1.83×
+   faster on CUDA at K = 1000, against 2.19× on the GTX 1650. Throughput is
+   7× higher (31.2 M vs 4.49 M evaluations per second). CUDA command latency
+   is flat from K=100 to K=1000 (about 1.6 ms), so at these sizes the
+   controller is launch-bound on the RTX 5090.
+
+6. **[Weak, n=8] MuJoCo σ=0.2 ensemble vs single shifts.** On the RTX 5090,
+   adaptive (70.8%) is above the ensemble (62.5%); on the GTX 1650 both were
+   70.8%. The matched-budget direction holds (fixed ≥ adaptive on every
+   seed). With intervals of about ±30 points, none of these differences is
+   informative.
