@@ -676,3 +676,103 @@ compared with the GTX 1650's `current_controller/` run.
    The fallback never fires under parameter mismatch, and fires on 9.2% of
    steps for the narrow ensemble after a state kick. At σ=1, adaptive's
    apparent lead over fixed-high at K=1000 and 8000 appears on both GPUs.
+
+## 2026-11-06 · Latency study: repeated crossover sweeps on RTX 4090 and RTX 5090 (vast.ai)
+
+**Command:**
+`uv run ua-mbrl remote run --gpu RTX_4090 RTX_5090 H100_SXM --exclusive --experiment crossover_sweep -- --repeats 5 --k-values 100 300 1000 3000 8000 16000 24000 32000 48000 64000`.
+The source was the uploaded tree at commit `bbca69e`.
+
+**Run directories:**
+- `results/vast/rtx_4090/crossover_sweep-20261106-140033/`
+- `results/vast/rtx_5090/crossover_sweep-20261106-140033/`
+
+The statistics are printed by `paper_arxiv/make_figures.py` (section
+"Latency study").
+
+**Machines:** whole-machine rentals (`--exclusive`), run in parallel.
+
+| GPU | driver | host CPU | location | time | cost |
+|---|---|---|---|---|---|
+| RTX 4090 | 595.99.02 | AMD Ryzen 5 7600 | Brazil | 0.19 h | $0.09 |
+| RTX 5090 | 580.178.04 | AMD Ryzen 7 7800X3D | South Korea | 0.18 h | $0.10 |
+
+**H100 SXM:** skipped, with no rental and no cost. There was no
+whole-machine H100 SXM offer at the time.
+
+**Protocol:** one fresh process per (K_max, repeat), 5 repeats, 20 seeds,
+30 control steps, current controller. The regression uses K_max ≥ 1000
+(8 points).
+
+### Numbers
+
+All five crossover measurements so far, in ms:
+
+| machine | repeats | fixed slope a (ms/rollout) | intercept b | adaptive mean | K* regression | K* interpolation | per-repeat K* range |
+|---|---|---|---|---|---|---|---|
+| GTX 1650 laptop | 1 | 0.09584 | −36.98 | 795.6 | 8,687 | 8,210 | – |
+| RTX 5090, host A (Core Ultra 9 285K, driver 610) | 1 | 0.00435 | 0.64 | 97.5 | 22,278 | 22,737 | – |
+| RTX 5090, host B (Ryzen 7 7800X3D, driver 580) | 5 | 0.00433 | 1.73 | 135.8 | 30,994 | 30,807 | 30,880–31,183 |
+| RTX 4090 (Ryzen 5 7600, driver 596) | 5 | 0.00717 | 0.96 | 130.7 | 18,090 | 17,593 | 17,873–18,408 |
+
+Host A is the 5090 from the 2026-11-06 replicate run, a single repeat over
+K_max = 100 to 26,000.
+
+**Repeatability within one machine:**
+- The largest coefficient of variation across 5 repeats is 1.68% for fixed
+  and 4.15% for adaptive on the RTX 4090, and 0.86% and 2.70% on the RTX
+  5090.
+- The fixed controller's IQR is ≤ 0.05 ms at every K ≥ 300.
+
+**Median latency in ms, fixed / adaptive, by K_max:**
+
+| K_max | RTX 4090 | RTX 5090 (host B) |
+|---|---|---|
+| 100 | 6.16 / 127.34 | 6.60 / 134.74 |
+| 1,000 | 6.34 / 127.27 | 6.63 / 135.04 |
+| 3,000 | 23.17 / 127.79 | 13.73 / 134.45 |
+| 8,000 | 59.19 / 127.16 | 36.63 / 134.37 |
+| 16,000 | 116.23 / 127.62 | 71.24 / 134.47 |
+| 24,000 | 173.28 / 128.30 | 105.54 / 134.76 |
+| 32,000 | 230.27 / 130.20 | 139.94 / 134.60 |
+| 48,000 | 344.64 / 134.87 | 209.24 / 136.39 |
+| 64,000 | 460.02 / 140.12 | 278.66 / 139.86 |
+
+### Observations
+
+1. **[Strong for this decomposition, two hosts] The crossover splits into a
+   GPU term and a host term.**
+   - The fixed controller's per-rollout slope is a property of the GPU. On
+     the same RTX 5090 model it was 0.00435 and 0.00433 ms per rollout on two
+     different hosts, 0.5% apart.
+   - The adaptive controller's flat latency is a property of the host CPU
+     and driver: 97.5 vs 135.8 ms on those two hosts (1.39×). That matches
+     the 1.4× MuJoCo per-command gap between the same two hosts.
+   - Because K* ≈ (T_adapt − b) / a, the same GPU model gives a crossover of
+     22,300 on one host and 31,000 on the other.
+   - Across GPUs, the RTX 4090 has a 1.65× steeper slope than the RTX 5090
+     (0.00717 vs 0.00433), so with a similar host its crossover is lower
+     (18,100).
+
+2. **[Strong] Within one machine and session, the crossover is repeatable.**
+   Per-repeat estimates stay within −1% to +2% of the median on the RTX 4090
+   and within 1% on the RTX 5090.
+   - The 41% back-to-back variation and the 2× drift seen on the GTX 1650 are
+     therefore properties of that laptop's power and thermal state, not of
+     the method.
+   - On a dedicated machine a single number is well defined, but it is a
+     number for that GPU and host, not for "the method".
+
+3. **[Moderate] Adaptive latency grows slightly at very large K_max.** It
+   rises from 127 to 140 ms on the RTX 4090 and from 135 to 140 ms on the RTX
+   5090 between K_max = 16,000 and 64,000. The 2–3% of escalated steps start
+   to cost real compute. The affine-vs-flat model is therefore approximate
+   above the crossover; it is slightly optimistic for adaptive.
+
+4. **[Moderate] Below about 1,000 rollouts every modern-GPU fixed controller
+   is launch-bound.** Latency is flat at 6.2–6.6 ms, or 5.0–5.2 ms on host A.
+   There, the fixed controller is about 20× faster than adaptive (ratio
+   0.048–0.053 on all three modern measurements).
+
+5. **[Tooling] No exclusive H100 SXM offer was available.** Rerun the H100
+   without `--exclusive`, or use `A100_SXM4`, for a datacenter data point.
