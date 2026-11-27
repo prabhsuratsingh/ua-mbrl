@@ -19,3 +19,15 @@ results/vast/.known_hosts
 results/*.log
 *.tgz
 .pytest_cache/
+
+# Local-only research artifacts (live on the local vast-ai-run branch, not master)
+paper_arxiv/
+blog/
+results/*
+!results/published/
+arxiv_preprint.tex
+math.tex
+paper.tex
+paper_submission.tex
+research_status.tex
+paper_figures/
