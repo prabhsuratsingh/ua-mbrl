@@ -1,7 +1,6 @@
 # ua-mbrl
 
-GPU-batched, uncertainty-gated ensemble MPPI. This is the code behind
-`arxiv_preprint.tex`. It locates the wall-clock crossover where adaptive
+GPU-batched, uncertainty-gated ensemble MPPI. It locates the wall-clock crossover where adaptive
 rollout allocation beats a fixed budget, and characterizes how reliable
 ensemble disagreement is as an out-of-distribution (OOD) trigger.
 
